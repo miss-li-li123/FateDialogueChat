@@ -1,25 +1,53 @@
 from fastapi import FastAPI, websockets, WebSocketDisconnect
-from langchain_community.chat_models import ChatOpenAI
+from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.messages import SystemMessage, HumanMessage  
 from langchain.agents import create_openai_tools_agent, AgentExecutor, tool
 from langchain.schema import StrOutputParser
-from typing import List, Dict, Any
+from langchain_community.utilities import SerpAPIWrapper
+from typing import Dict, Any
+import os
+from dotenv import load_dotenv
+import logging
+
+# 配置日志
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+
+load_dotenv("deepseek.env")
+api_key = os.getenv("DEEPSEEK_API_KEY")
+api_base = os.getenv("DEEPSEEK_API_BASE")
+serp_api_key = os.getenv("SERPAPI_API_KEY")
+os.environ["OPENAI_API_KEY"] =  "sk-Ku8CngjA2U0sA4msNAWQNI1nsv8xrCnGG6LgA46vdXktg7gH"
+os.environ["OPENAI_API_BASE"] = "https://api.openai-proxy.org/v1"
+
+os.environ["SERPAPI_API_KEY"] =serp_api_key
+DEEPSEEK_CONFIG = {
+    "model": "deepseek-chat",
+    "openai_api_key":api_key,
+    "openai_api_base":api_base
+}
+
 
 app = FastAPI()
 
 
 @tool
-def test_tool(query: str) -> str:
-    """这是一个测试工具，当用户询问测试信息时使用"""
-    return f"测试工具被调用，输入内容: {query}"
+def search(query:str):
+    """只有需要了解实时信息或不知道的事情的时候才会使用这个工具。"""
+    serp = SerpAPIWrapper()
+    result = serp.run(query)
+    print("实时搜索结果:",result)
+    return result
+
+
 
 class Master:
     def __init__(self):
         self.chatmodel = ChatOpenAI(
-            model =  "deepseek-chat",
-            openai_api_key  = "sk-1719a446a8a643d8ba71d7b4cee55069",
-            openai_api_base = "https://api.deepseek.com/v1",
+            # model="gpt-4-1106-preview",
+            **DEEPSEEK_CONFIG,
             temperature = 0,
             streaming = True
         )
@@ -96,20 +124,26 @@ class Master:
             },
         }
         self.prompt_template = ChatPromptTemplate.from_messages([
-            SystemMessage(content=self.SYSTEMPL.format(who_you_are=self.MOODS[self.QingXu]["roleSet"])),
-            HumanMessage(content="{input}"),
+            (
+                "system",
+                self.SYSTEMPL.format(who_you_are=self.MOODS[self.QingXu]["roleSet"]),
+            ),
+            (
+                "user",
+                "{input}"
+            ),
             MessagesPlaceholder(variable_name="agent_scratchpad")
         ])
         self.memory = ""
-        tools = [test_tool]
+        tools = [search]
         agent = create_openai_tools_agent(
             self.chatmodel,
-            tools=tools,
+            tools=[search],
             prompt=self.prompt_template
             )
         self.agent_executor = AgentExecutor(
             agent=agent,
-            tools=tools,
+            tools=[search],
             verbose=True,
         )
 
@@ -122,8 +156,14 @@ class Master:
             result = self.agent_executor.invoke({
                 "input": query,
             })
+             # 记录工具调用情况
+            if "intermediate_steps" in result:
+                for step in result["intermediate_steps"]:
+                    if step[0].tool == "search_tool":
+                        logger.info(f"搜索工具被调用，查询: {step[0].tool_input}")
             return result
         except Exception as e:
+            logger.error(f"代理执行错误: {str(e)}")
             return {"error": str(e)}
         
     def qingxu_chain(self, query:str):
@@ -142,26 +182,29 @@ class Master:
         result = chain.invoke({"query":query})
         self.QingXu = result
         return result
+    
+    
 @app.get("/")
-async def read_root():
+def read_root():
     return {"Hello": "World"}
 
-@app.get("/chat")
-async def chat(query:str):
+@app.post("/chat")
+def chat(query:str):
     master = Master()
+    print(query)
     return master.run(query)
     
 
 @app.get("/add_urls")
-async def add_urls():
+def add_urls():
     return {"response": "add_urls"}
 
 @app.get("/add_pdfs")
-async def add_pdfs():
+def add_pdfs():
     return {"response": "add_pdfs"}
 
 @app.get("/add_texts")
-async def add_texts():
+def add_texts():
     return {"response": "add_texts"}
 
 
