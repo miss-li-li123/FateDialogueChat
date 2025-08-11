@@ -1,33 +1,30 @@
 from fastapi import FastAPI, websockets, WebSocketDisconnect
-from langchain_openai import ChatOpenAI
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain_core.messages import SystemMessage, HumanMessage  
-from langchain.agents import create_openai_tools_agent, AgentExecutor, tool
+from langchain.agents import create_openai_tools_agent, AgentExecutor
 from langchain.schema import StrOutputParser
 from langchain_community.utilities import SerpAPIWrapper
 from typing import Dict, Any
-import os
-from dotenv import load_dotenv
 import logging
+from Mytools import *
+from config.settings import app_config
 
 # 配置日志
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-load_dotenv("deepseek.env")
-api_key = os.getenv("DEEPSEEK_API_KEY")
-api_base = os.getenv("DEEPSEEK_API_BASE")
-serp_api_key = os.getenv("SERPAPI_API_KEY")
-os.environ["OPENAI_API_KEY"] =  "sk-Ku8CngjA2U0sA4msNAWQNI1nsv8xrCnGG6LgA46vdXktg7gH"
-os.environ["OPENAI_API_BASE"] = "https://api.openai-proxy.org/v1"
 
-os.environ["SERPAPI_API_KEY"] =serp_api_key
-DEEPSEEK_CONFIG = {
-    "model": "deepseek-chat",
-    "openai_api_key":api_key,
-    "openai_api_base":api_base
-}
+# os.environ["OPENAI_API_KEY"] =  "sk-Ku8CngjA2U0sA4msNAWQNI1nsv8xrCnGG6LgA46vdXktg7gH"
+# os.environ["OPENAI_API_BASE"] = "https://api.openai-proxy.org/v1"
+
+# DEEPSEEK_CONFIG = {
+#     # "model":"gpt-4-1106-preview",
+#     # "openai_api_key":"sk-Ku8CngjA2U0sA4msNAWQNI1nsv8xrCnGG6LgA46vdXktg7gH",
+#     # "openai_api_base":"https://api.openai-proxy.org/v1",
+#     "model": "deepseek-chat",
+#     "openai_api_key":api_key,
+#     "openai_api_base":api_base
+# }
 
 
 app = FastAPI()
@@ -45,12 +42,9 @@ def search(query:str):
 
 class Master:
     def __init__(self):
-        self.chatmodel = ChatOpenAI(
-            # model="gpt-4-1106-preview",
-            **DEEPSEEK_CONFIG,
-            temperature = 0,
-            streaming = True
-        )
+        print(app_config.deepseek.openai_api_base)
+        print(app_config.deepseek.openai_api_key)
+        self.chatmodel = app_config.deepseek.create_chat_model()
         self.QingXu = "default"
         self.MEMORY_KEY = "chat_hostory"
         self.SYSTEMPL = """你是一个非常厉害的算命先生，凝胶陈玉楼人称陈大师。
@@ -135,15 +129,15 @@ class Master:
             MessagesPlaceholder(variable_name="agent_scratchpad")
         ])
         self.memory = ""
-        tools = [search]
+        tools = [search, get_info_from_local_db, bazi_cesuan, yaoyigua, jiemeng]
         agent = create_openai_tools_agent(
             self.chatmodel,
-            tools=[search],
+            tools=tools,
             prompt=self.prompt_template
             )
         self.agent_executor = AgentExecutor(
             agent=agent,
-            tools=[search],
+            tools=tools,
             verbose=True,
         )
 
@@ -156,11 +150,11 @@ class Master:
             result = self.agent_executor.invoke({
                 "input": query,
             })
-             # 记录工具调用情况
-            if "intermediate_steps" in result:
-                for step in result["intermediate_steps"]:
-                    if step[0].tool == "search_tool":
-                        logger.info(f"搜索工具被调用，查询: {step[0].tool_input}")
+            # 检查中间步骤
+            if steps := result.get("intermediate_steps"):
+                for action, _ in steps:
+                    if action.tool == "bazi_cesuan":
+                        logger.info(f"八字排盘工具已触发！输入参数: {action.tool_input}")
             return result
         except Exception as e:
             logger.error(f"代理执行错误: {str(e)}")
