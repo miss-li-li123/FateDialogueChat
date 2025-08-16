@@ -3,7 +3,13 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain.agents import create_openai_tools_agent, AgentExecutor
 from langchain.schema import StrOutputParser
 from langchain_community.utilities import SerpAPIWrapper
+from langchain.memory import ConversationTokenBufferMemory
+from langchain_community.chat_message_histories import RedisChatMessageHistory
+from langchain_community.document_loaders import WebBaseLoader
+from langchain.text_splitter import RecursiveCharacterTextSplitter
 from typing import Dict, Any
+from langchain_community.vectorstores import Qdrant
+from qdrant_client import QdrantClient
 import logging
 from Mytools import *
 from config.settings import app_config
@@ -46,7 +52,7 @@ class Master:
         print(app_config.deepseek.openai_api_key)
         self.chatmodel = app_config.deepseek.create_chat_model()
         self.QingXu = "default"
-        self.MEMORY_KEY = "chat_hostory"
+        self.MEMORY_KEY = "chat_history"
         self.SYSTEMPL = """你是一个非常厉害的算命先生，凝胶陈玉楼人称陈大师。
         以下是你的个人设定:
         1. 你精通阴阳五行，能够算命、紫薇斗数、姓名测算、占卜凶吉，看命运八字等。
@@ -122,24 +128,59 @@ class Master:
                 "system",
                 self.SYSTEMPL.format(who_you_are=self.MOODS[self.QingXu]["roleSet"]),
             ),
+            MessagesPlaceholder(variable_name=self.MEMORY_KEY),
             (
                 "user",
                 "{input}"
             ),
             MessagesPlaceholder(variable_name="agent_scratchpad")
         ])
-        self.memory = ""
+        self.memory = self.get_memory()
         tools = [search, get_info_from_local_db, bazi_cesuan, yaoyigua, jiemeng]
         agent = create_openai_tools_agent(
             self.chatmodel,
             tools=tools,
             prompt=self.prompt_template
             )
+        memory = ConversationTokenBufferMemory(
+            llm = self.chatmodel,
+            human_prefix="用户",
+            ai_prefix="陈大师",
+            memory_key=self.MEMORY_KEY,
+            output_key="output",
+            return_messages=True,
+            max_token_limit=1000,
+            chat_memory=self.memory,
+        )
         self.agent_executor = AgentExecutor(
             agent=agent,
             tools=tools,
+            memory=memory,
             verbose=True,
         )
+
+    def get_memory(self):
+        chat_message_history = RedisChatMessageHistory(
+            session_id="session",
+            url= "redis://117.72.182.179:6379/0",
+        )
+        store_message = chat_message_history.messages
+        if len(store_message) > 10:
+            prompt = ChatPromptTemplate.from_messages(
+                [
+                    (
+                        "system",
+                        self.SYSTEMPL+"\n这是一段你和用户的对话记忆，对其进行总结摘要，摘要使用第一人称‘我’，并且提取其中的用户关键信息，如姓名、年龄、性别、出生日期等。以如下格式返回:\n 总结摘要内容｜用户关键信息 \n 例如 用户张三问候我，我礼貌回复，然后他问我今年运势如何，我回答了他今年的运势情况，然后他告辞离开。｜张三,生日1999年1月1日"
+                    ),
+                    ("user","{input}"),
+                ]
+            )
+            chain = prompt | self.chatmodel 
+            summary = chain.invoke({"input":store_message,"who_you_are":self.MOODS[self.QingXu]["roleSet"]})
+            chat_message_history.clear()
+            chat_message_history.add_message(summary)
+        return chat_message_history
+            
 
     def run(self, query: str) -> Dict[str, Any]:
         """运行对话代理"""
@@ -149,6 +190,7 @@ class Master:
             # 确保传入所有必需的变量
             result = self.agent_executor.invoke({
                 "input": query,
+                "chat_history":self.memory.messages
             })
             # 检查中间步骤
             if steps := result.get("intermediate_steps"):
@@ -190,8 +232,22 @@ def chat(query:str):
     
 
 @app.get("/add_urls")
-def add_urls():
-    return {"response": "add_urls"}
+def add_urls(URL:str):
+    loader = WebBaseLoader(URL)
+    docs = loader.load()
+    docments = RecursiveCharacterTextSplitter(
+        chunk_size=800,
+        chunk_overlap=50,
+    ).split_documents(docs)
+    Qdrant.from_documents(
+        docments,
+        HuggingFaceEmbeddings(
+            model_name="sentence-transformers/all-MiniLM-L6-v2"
+        ),
+        path="/Users/josh/Desktop/aiProject/FateDialogueChat/bot/local_qdrand",
+        collection_name="local_documents",
+    )
+    return {"ok": "添加成功！"}
 
 @app.get("/add_pdfs")
 def add_pdfs():
